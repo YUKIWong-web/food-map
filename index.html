@@ -9,7 +9,7 @@
     html, body { height: 100%; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
     #app { display: flex; height: 100%; }
     #sidebar {
-      width: 320px; background: #fff; border-right: 1px solid #ddd;
+      width: 360px; background: #fff; border-right: 1px solid #ddd;
       display: flex; flex-direction: column; padding: 12px; overflow-y: auto;
     }
     #sidebar h2 { margin: 0 0 10px; font-size: 18px; color: #333; }
@@ -21,6 +21,20 @@
     .btn.secondary { background: #007aff; }
     .btn.danger { background: #ff3b30; }
     .btn:active { opacity: 0.8; }
+    
+    /* 新增：搜索控制区样式 */
+    .search-panel {
+      background: #f8f9fa; border-radius: 8px; padding: 10px; margin-bottom: 10px;
+      border: 1px solid #eee;
+    }
+    .search-panel select, .search-panel input {
+      width: 100%; padding: 6px 8px; margin-bottom: 8px;
+      border: 1px solid #ccc; border-radius: 4px; font-size: 13px;
+    }
+    .search-panel .row { display: flex; gap: 6px; }
+    .search-panel .row select, .search-panel .row input { flex: 1; }
+    .hidden { display: none !important; }
+    
     #recordsList { margin-top: 10px; }
     .record-item {
       padding: 8px; border-bottom: 1px solid #eee; cursor: pointer;
@@ -30,6 +44,7 @@
     .record-item .name { font-weight: 600; color: #333; }
     .record-item .remark { color: #888; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     #map { flex: 1; height: 100%; }
+    
     /* 模态框 */
     .modal {
       position: fixed; top: 0; left: 0; width: 100%; height: 100%;
@@ -52,15 +67,14 @@
     .image-preview img { width: 60px; height: 60px; object-fit: cover; border-radius: 4px; }
     .modal-actions { display: flex; gap: 10px; margin-top: 15px; }
     .modal-actions .btn { flex: 1; }
-    /* 移动端适配 */
+    
     @media (max-width: 768px) {
       #app { flex-direction: column; }
-      #sidebar { width: 100%; height: 40%; border-right: none; border-bottom: 1px solid #ddd; }
-      #map { height: 60%; }
+      #sidebar { width: 100%; height: 45%; border-right: none; border-bottom: 1px solid #ddd; }
+      #map { height: 55%; }
     }
   </style>
   <script>
-    // 安全密钥配置（必须放在高德 JS API 加载之前）
     window._AMapSecurityConfig = {
       securityJsCode: 'bdc195010d2856009ac37219a3866567'
     };
@@ -71,8 +85,40 @@
   <div id="app">
     <div id="sidebar">
       <h2>🍜 我的美食地图</h2>
+      
+      <!-- 新增：搜索筛选面板 -->
+      <div class="search-panel">
+        <div class="row">
+          <select id="citySelect">
+            <option value="深圳">深圳</option>
+            <option value="广州">广州</option>
+            <option value="香港">香港</option>
+          </select>
+          <select id="searchType">
+            <option value="district">按区域搜索</option>
+            <option value="metro">按地铁搜索</option>
+          </select>
+        </div>
+        
+        <!-- 区域选择 -->
+        <div id="districtPanel">
+          <select id="districtSelect"></select>
+        </div>
+        
+        <!-- 地铁选择 -->
+        <div id="metroPanel" class="hidden">
+          <div class="row">
+            <select id="lineSelect"></select>
+            <select id="stationSelect"></select>
+          </div>
+        </div>
+        
+        <input type="text" id="keywordInput" placeholder="输入店铺名称或关键字（如：烧烤、火锅）">
+        <button class="btn secondary" id="searchBtn">🔍 搜索美食</button>
+        <button class="btn" id="locateBtn" style="background:#555;">📍 回到我的位置</button>
+      </div>
+      
       <button class="btn" id="addBtn">＋ 添加记录</button>
-      <button class="btn secondary" id="searchBtn">🔍 搜索附近美食</button>
       <div id="recordsList"></div>
     </div>
     <div id="map"></div>
@@ -107,41 +153,70 @@
   </div>
 
   <script>
+    // ==================== 数据字典 ====================
+    const REGION_DATA = {
+      '深圳': {
+        districts: ['福田区', '罗湖区', '南山区', '盐田区', '宝安区', '龙岗区', '龙华区', '坪山区', '光明区', '大鹏新区'],
+        lines: {
+          '1号线': ['罗湖', '国贸', '老街', '大剧院', '科学馆', '华强路', '岗厦', '会展中心', '购物公园', '香蜜湖', '车公庙', '竹子林', '侨城东', '华侨城', '世界之窗', '白石洲', '高新园', '深大', '桃园', '大新', '鲤鱼门', '前海湾', '新安', '宝安中心', '宝体', '坪洲', '西乡', '固戍', '后瑞', '机场东'],
+          '2号线': ['赤湾', '蛇口港', '海上世界', '水湾', '东角头', '湾厦', '海月', '登良', '后海', '科苑', '红树湾', '世界之窗', '侨城北', '深康', '安托山', '侨香', '香蜜', '香梅北', '景田', '莲花西', '福田', '市民中心', '岗厦北', '华强北', '燕南', '大剧院', '湖贝', '黄贝岭', '新秀', '莲塘口岸', '仙湖路', '莲塘'],
+          '3号线': ['益田', '石厦', '购物公园', '福田', '少年宫', '莲花村', '华新', '通新岭', '红岭', '老街', '晒布', '翠竹', '田贝', '水贝', '草埔', '布吉关', '布吉', '木棉湾', '大芬', '丹竹头', '六约', '塘坑', '横岗', '永湖', '荷坳', '大运', '爱联', '吉祥', '龙城广场', '南联', '双龙', '梨园', '新生', '坪西', '低碳城', '白石塘', '富坪', '坪地六联'],
+          '4号线': ['福田口岸', '福民', '会展中心', '市民中心', '少年宫', '莲花北', '上梅林', '梅林关', '民乐', '白石龙', '深圳北站', '红山', '上塘', '龙胜', '龙华', '清湖', '清湖北', '竹村', '茜坑', '长湖', '观澜', '松元厦', '观澜湖', '牛湖']
+        }
+      },
+      '广州': {
+        districts: ['越秀区', '海珠区', '荔湾区', '天河区', '白云区', '黄埔区', '番禺区', '花都区', '南沙区', '从化区', '增城区'],
+        lines: {
+          '1号线': ['西塱', '坑口', '花地湾', '芳村', '黄沙', '长寿路', '陈家祠', '西门口', '公园前', '农讲所', '烈士陵园', '东山口', '杨箕', '体育西路', '体育中心', '广州东站'],
+          '2号线': ['广州南站', '石壁', '会江', '南浦', '洛溪', '南洲', '东晓南', '江泰路', '昌岗', '江南西', '市二宫', '海珠广场', '公园前', '纪念堂', '越秀公园', '广州火车站', '三元里', '飞翔公园', '白云公园', '白云文化广场', '萧岗', '江夏', '黄边', '嘉禾望岗'],
+          '3号线': ['番禺广场', '市桥', '汉溪长隆', '大石', '厦滘', '沥滘', '大塘', '客村', '广州塔', '珠江新城', '体育西路', '石牌桥', '岗顶', '华师', '五山', '天河客运站', '林和西', '广州东站', '燕塘', '梅花园', '京溪南方医院', '同和', '永泰', '白云大道北', '嘉禾望岗', '龙归', '人和', '高增', '机场南', '机场北']
+        }
+      },
+      '香港': {
+        districts: ['中西区', '湾仔区', '东区', '南区', '油尖旺区', '深水埗区', '九龙城区', '黄大仙区', '观塘区', '葵青区', '荃湾区', '屯门区', '元朗区', '北区', '大埔区', '沙田区', '西贡区', '离岛区'],
+        lines: {
+          '荃湾线': ['荃湾', '大窝口', '葵兴', '葵芳', '荔景', '美孚', '荔枝角', '长沙湾', '深水埗', '太子', '旺角', '油麻地', '佐敦', '尖沙咀', '金钟', '中环'],
+          '观塘线': ['黄埔', '何文田', '油麻地', '旺角', '太子', '石硖尾', '九龙塘', '乐富', '黄大仙', '钻石山', '彩虹', '九龙湾', '牛头角', '观塘', '蓝田', '油塘', '调景岭'],
+          '港岛线': ['坚尼地城', '香港大学', '西营盘', '上环', '中环', '金钟', '湾仔', '铜锣湾', '天后', '炮台山', '北角', '鲗鱼涌', '太古', '西湾河', '筲箕湾', '杏花邨', '柴湾']
+        }
+      }
+    };
+
     // ==================== 全局变量 ====================
     let map;
     let geolocation;
     let geocoder;
     let placeSearch;
     let infoWindow;
-    let addingMode = false;       // 是否正在等待用户点击地图选点
-    let tempLngLat = null;        // 临时选中的坐标
-    let tempAddress = '';         // 临时地址
-    let tempImages = [];          // 临时图片 base64 数组
-    let userMarkers = [];         // 用户记录标记
-    let poiMarkers = [];          // 搜索到的 POI 标记
-    let records = [];             // 用户记录数据
+    let addingMode = false;
+    let tempLngLat = null;
+    let tempAddress = '';
+    let tempImages = [];
+    let userMarkers = [];
+    let poiMarkers = [];
+    let records = [];
+    let currentCity = '深圳';
 
     const STORAGE_KEY = 'foodMapRecords';
 
     // ==================== 初始化 ====================
     AMap.plugin(['AMap.PlaceSearch', 'AMap.Geolocation', 'AMap.Geocoder', 'AMap.ToolBar', 'AMap.Scale'], function () {
       initMap();
+      initSearchPanel();
       loadRecords();
       bindEvents();
     });
 
     function initMap() {
       map = new AMap.Map('map', {
-        zoom: 15,
+        zoom: 12,
         center: [114.057868, 22.543099], // 深圳默认中心
         viewMode: '2D'
       });
 
-      // 工具条和比例尺
       map.addControl(new AMap.ToolBar());
       map.addControl(new AMap.Scale());
 
-      // 定位
       geolocation = new AMap.Geolocation({
         enableHighAccuracy: true,
         timeout: 10000,
@@ -150,40 +225,170 @@
       });
       map.addControl(geolocation);
 
-      // 逆地理编码
       geocoder = new AMap.Geocoder();
-
-      // 周边搜索
       placeSearch = new AMap.PlaceSearch({
-        type: '餐饮服务',
         pageSize: 25,
         pageIndex: 1,
         extensions: 'all'
       });
 
-      // 信息窗体
       infoWindow = new AMap.InfoWindow({
         offset: new AMap.Pixel(0, -30),
         autoMove: true
       });
 
-      // 尝试定位
+      // 首次定位并搜索周边
       geolocation.getCurrentPosition(function (status, result) {
         if (status === 'complete') {
           map.setCenter(result.position);
+          map.setZoom(15);
+          // 默认搜索周边，不限定城市
           searchNearby(result.position);
-        } else {
-          // 定位失败，用深圳默认位置搜索
-          searchNearby([114.057868, 22.543099]);
         }
       });
     }
 
-    // ==================== 搜索附近美食 ====================
+    // ==================== 搜索面板逻辑 ====================
+    function initSearchPanel() {
+      const citySelect = document.getElementById('citySelect');
+      const searchType = document.getElementById('searchType');
+      const districtSelect = document.getElementById('districtSelect');
+      const districtPanel = document.getElementById('districtPanel');
+      const metroPanel = document.getElementById('metroPanel');
+      const lineSelect = document.getElementById('lineSelect');
+      const stationSelect = document.getElementById('stationSelect');
+
+      // 更新区域下拉
+      function updateDistricts() {
+        const city = citySelect.value;
+        districtSelect.innerHTML = '';
+        REGION_DATA[city].districts.forEach(d => {
+          districtSelect.innerHTML += `<option value="${d}">${d}</option>`;
+        });
+      }
+
+      // 更新地铁线路
+      function updateLines() {
+        const city = citySelect.value;
+        lineSelect.innerHTML = '';
+        const lines = Object.keys(REGION_DATA[city].lines);
+        lines.forEach(l => {
+          lineSelect.innerHTML += `<option value="${l}">${l}</option>`;
+        });
+        updateStations(); // 联动更新站点
+      }
+
+      // 更新地铁站点
+      function updateStations() {
+        const city = citySelect.value;
+        const line = lineSelect.value;
+        stationSelect.innerHTML = '';
+        const stations = REGION_DATA[city].lines[line] || [];
+        stations.forEach(s => {
+          stationSelect.innerHTML += `<option value="${s}">${s}</option>`;
+        });
+        // 允许用户手动输入站点
+        stationSelect.innerHTML += `<option value="custom">-- 手动输入 --</option>`;
+      }
+
+      // 城市变化时，更新所有
+      citySelect.addEventListener('change', function () {
+        currentCity = this.value;
+        updateDistricts();
+        updateLines();
+        // 地图中心移动到城市中心（简单处理，实际可使用地理编码）
+        const cityCenters = {
+          '深圳': [114.057868, 22.543099],
+          '广州': [113.264385, 23.129112],
+          '香港': [114.173355, 22.320048]
+        };
+        if (cityCenters[currentCity]) {
+          map.setCenter(cityCenters[currentCity]);
+          map.setZoom(11);
+        }
+      });
+
+      // 切换搜索类型
+      searchType.addEventListener('change', function () {
+        if (this.value === 'district') {
+          districtPanel.classList.remove('hidden');
+          metroPanel.classList.add('hidden');
+        } else {
+          districtPanel.classList.add('hidden');
+          metroPanel.classList.remove('hidden');
+        }
+      });
+
+      // 线路变化联动站点
+      lineSelect.addEventListener('change', updateStations);
+
+      // 初始化
+      updateDistricts();
+      updateLines();
+    }
+
+    // ==================== 执行搜索 ====================
+    function performSearch() {
+      const city = document.getElementById('citySelect').value;
+      const type = document.getElementById('searchType').value;
+      const keyword = document.getElementById('keywordInput').value.trim();
+      
+      let searchKeyword = keyword || '美食';
+      let searchCity = city;
+
+      if (type === 'district') {
+        const district = document.getElementById('districtSelect').value;
+        searchKeyword = `${district} ${searchKeyword}`;
+      } else {
+        const line = document.getElementById('lineSelect').value;
+        let station = document.getElementById('stationSelect').value;
+        if (station === 'custom') {
+          station = prompt('请输入地铁站名称：');
+          if (!station) return;
+        }
+        searchKeyword = `${line} ${station} ${searchKeyword}`;
+      }
+
+      // 使用高德 POI 搜索
+      placeSearch.setCity(searchCity);
+      placeSearch.search(searchKeyword, function (status, result) {
+        if (status === 'complete' && result.poiList && result.poiList.pois.length > 0) {
+          // 清除旧 POI
+          poiMarkers.forEach(m => map.remove(m));
+          poiMarkers = [];
+
+          const pois = result.poiList.pois;
+          pois.forEach(function (poi) {
+            const marker = new AMap.Marker({
+              position: poi.location,
+              title: poi.name,
+              icon: new AMap.Icon({
+                image: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b.png',
+                size: new AMap.Size(19, 31),
+                imageSize: new AMap.Size(19, 31)
+              }),
+              offset: new AMap.Pixel(-9, -31)
+            });
+            marker.on('click', function () {
+              showPoiInfo(poi);
+            });
+            map.add(marker);
+            poiMarkers.push(marker);
+          });
+
+          // 自动定位到第一个结果
+          map.setCenter(pois[0].location);
+          map.setZoom(14);
+        } else {
+          alert('未找到相关结果，请尝试更换关键词或区域。');
+        }
+      });
+    }
+
+    // 搜索附近美食（原有逻辑保留，供“回到我的位置”使用）
     function searchNearby(center) {
       placeSearch.searchNearBy('', center, 2000, function (status, result) {
         if (status === 'complete' && result.poiList && result.poiList.pois) {
-          // 清除旧的 POI 标记
           poiMarkers.forEach(m => map.remove(m));
           poiMarkers = [];
 
@@ -208,7 +413,7 @@
       });
     }
 
-    // 显示 POI 信息窗体
+    // ==================== 信息窗体与记录 ====================
     function showPoiInfo(poi) {
       const biz = poi.biz_ext || {};
       const rating = biz.rating ? `⭐ ${biz.rating}` : '暂无评分';
@@ -229,16 +434,14 @@
       `;
       infoWindow.setContent(content);
       infoWindow.open(map, poi.location);
-      window.currentPoi = poi; // 缓存当前 POI
+      window.currentPoi = poi;
     }
 
-    // 从 POI 快速添加记录
     window.addFromPoi = function (poiId) {
       const poi = window.currentPoi;
       if (!poi) return;
       infoWindow.close();
 
-      // 打开添加表单，并预填信息
       tempLngLat = poi.location;
       tempAddress = poi.address || '';
       document.getElementById('inputName').value = poi.name;
@@ -249,20 +452,32 @@
       document.getElementById('modal').classList.remove('hidden');
     };
 
-    // ==================== 用户添加记录 ====================
     function bindEvents() {
-      // 添加记录按钮
+      // 新增：搜索按钮
+      document.getElementById('searchBtn').addEventListener('click', performSearch);
+      
+      // 新增：回到我的位置
+      document.getElementById('locateBtn').addEventListener('click', function () {
+        geolocation.getCurrentPosition(function (status, result) {
+          if (status === 'complete') {
+            map.setCenter(result.position);
+            map.setZoom(15);
+            searchNearby(result.position);
+          } else {
+            alert('定位失败，请检查手机定位权限。');
+          }
+        });
+      });
+
       document.getElementById('addBtn').addEventListener('click', function () {
         addingMode = true;
         alert('请在地图上点击你要记录的位置');
       });
 
-      // 地图点击事件
       map.on('click', function (e) {
         if (addingMode) {
           addingMode = false;
           tempLngLat = e.lnglat;
-          // 逆地理编码获取地址
           geocoder.getAddress(tempLngLat, function (status, result) {
             if (status === 'complete' && result.regeocode) {
               tempAddress = result.regeocode.formattedAddress;
@@ -279,19 +494,6 @@
         }
       });
 
-      // 搜索按钮
-      document.getElementById('searchBtn').addEventListener('click', function () {
-        geolocation.getCurrentPosition(function (status, result) {
-          if (status === 'complete') {
-            map.setCenter(result.position);
-            searchNearby(result.position);
-          } else {
-            searchNearby(map.getCenter());
-          }
-        });
-      });
-
-      // 图片选择
       document.getElementById('inputImages').addEventListener('change', async function (e) {
         const files = Array.from(e.target.files);
         for (const file of files) {
@@ -299,26 +501,18 @@
           tempImages.push(base64);
         }
         renderImagePreview();
-        e.target.value = ''; // 允许重复选择同一文件
+        e.target.value = '';
       });
 
-      // 取消
       document.getElementById('cancelBtn').addEventListener('click', function () {
         document.getElementById('modal').classList.add('hidden');
       });
 
-      // 保存
       document.getElementById('saveBtn').addEventListener('click', function () {
         const name = document.getElementById('inputName').value.trim();
         const remark = document.getElementById('inputRemark').value.trim();
-        if (!name) {
-          alert('请填写店名');
-          return;
-        }
-        if (!tempLngLat) {
-          alert('坐标丢失，请重新选点');
-          return;
-        }
+        if (!name) { alert('请填写店名'); return; }
+        if (!tempLngLat) { alert('坐标丢失，请重新选点'); return; }
 
         const record = {
           id: 'user_' + Date.now(),
@@ -414,7 +608,6 @@
       if (!confirm('确定删除这条记录吗？')) return;
       records = records.filter(r => r.id !== id);
       saveRecords();
-      // 移除标记
       userMarkers = userMarkers.filter(m => {
         if (m.recordId === id) {
           map.remove(m);
