@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>我的美食地图</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    #app { display: flex; height: 100%; }
+    #sidebar {
+      width: 320px; background: #fff; border-right: 1px solid #ddd;
+      display: flex; flex-direction: column; padding: 12px; overflow-y: auto;
+    }
+    #sidebar h2 { margin: 0 0 10px; font-size: 18px; color: #333; }
+    .btn {
+      display: block; width: 100%; padding: 10px; margin-bottom: 8px;
+      border: none; border-radius: 6px; background: #1aad19; color: #fff;
+      font-size: 14px; cursor: pointer;
+    }
+    .btn.secondary { background: #007aff; }
+    .btn.danger { background: #ff3b30; }
+    .btn:active { opacity: 0.8; }
+    #recordsList { margin-top: 10px; }
+    .record-item {
+      padding: 8px; border-bottom: 1px solid #eee; cursor: pointer;
+      font-size: 13px;
+    }
+    .record-item:hover { background: #f5f5f5; }
+    .record-item .name { font-weight: 600; color: #333; }
+    .record-item .remark { color: #888; margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #map { flex: 1; height: 100%; }
+    /* 模态框 */
+    .modal {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center;
+      z-index: 1000;
+    }
+    .modal.hidden { display: none; }
+    .modal-content {
+      background: #fff; border-radius: 10px; padding: 20px; width: 90%; max-width: 400px;
+      max-height: 90vh; overflow-y: auto;
+    }
+    .modal-content h3 { margin: 0 0 15px; }
+    .form-group { margin-bottom: 12px; }
+    .form-group label { display: block; font-size: 13px; color: #555; margin-bottom: 4px; }
+    .form-group input, .form-group textarea {
+      width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 5px; font-size: 14px;
+    }
+    .form-group textarea { height: 70px; resize: vertical; }
+    .image-preview { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+    .image-preview img { width: 60px; height: 60px; object-fit: cover; border-radius: 4px; }
+    .modal-actions { display: flex; gap: 10px; margin-top: 15px; }
+    .modal-actions .btn { flex: 1; }
+    /* 移动端适配 */
+    @media (max-width: 768px) {
+      #app { flex-direction: column; }
+      #sidebar { width: 100%; height: 40%; border-right: none; border-bottom: 1px solid #ddd; }
+      #map { height: 60%; }
+    }
+  </style>
+  <script>
+    // 安全密钥配置（必须放在高德 JS API 加载之前）
+    window._AMapSecurityConfig = {
+      securityJsCode: 'bdc195010d2856009ac37219a3866567'
+    };
+  </script>
+  <script src="https://webapi.amap.com/maps?v=2.0&key=e1aa9fd682d5eaa152893491de4ef32c&plugin=AMap.PlaceSearch,AMap.Geolocation,AMap.Geocoder,AMap.ToolBar,AMap.Scale"></script>
+</head>
+<body>
+  <div id="app">
+    <div id="sidebar">
+      <h2>🍜 我的美食地图</h2>
+      <button class="btn" id="addBtn">＋ 添加记录</button>
+      <button class="btn secondary" id="searchBtn">🔍 搜索附近美食</button>
+      <div id="recordsList"></div>
+    </div>
+    <div id="map"></div>
+  </div>
+
+  <!-- 添加记录模态框 -->
+  <div id="modal" class="modal hidden">
+    <div class="modal-content">
+      <h3>添加美食记录</h3>
+      <div class="form-group">
+        <label>店名 / 地点名称</label>
+        <input type="text" id="inputName" placeholder="例如：深圳某家烧烤店">
+      </div>
+      <div class="form-group">
+        <label>地址</label>
+        <input type="text" id="inputAddress" readonly>
+      </div>
+      <div class="form-group">
+        <label>备注</label>
+        <textarea id="inputRemark" placeholder="吃了什么？味道如何？人均多少？"></textarea>
+      </div>
+      <div class="form-group">
+        <label>图片</label>
+        <input type="file" id="inputImages" accept="image/*" multiple>
+        <div class="image-preview" id="imagePreview"></div>
+      </div>
+      <div class="modal-actions">
+        <button class="btn danger" id="cancelBtn">取消</button>
+        <button class="btn" id="saveBtn">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ==================== 全局变量 ====================
+    let map;
+    let geolocation;
+    let geocoder;
+    let placeSearch;
+    let infoWindow;
+    let addingMode = false;       // 是否正在等待用户点击地图选点
+    let tempLngLat = null;        // 临时选中的坐标
+    let tempAddress = '';         // 临时地址
+    let tempImages = [];          // 临时图片 base64 数组
+    let userMarkers = [];         // 用户记录标记
+    let poiMarkers = [];          // 搜索到的 POI 标记
+    let records = [];             // 用户记录数据
+
+    const STORAGE_KEY = 'foodMapRecords';
+
+    // ==================== 初始化 ====================
+    AMap.plugin(['AMap.PlaceSearch', 'AMap.Geolocation', 'AMap.Geocoder', 'AMap.ToolBar', 'AMap.Scale'], function () {
+      initMap();
+      loadRecords();
+      bindEvents();
+    });
+
+    function initMap() {
+      map = new AMap.Map('map', {
+        zoom: 15,
+        center: [114.057868, 22.543099], // 深圳默认中心
+        viewMode: '2D'
+      });
+
+      // 工具条和比例尺
+      map.addControl(new AMap.ToolBar());
+      map.addControl(new AMap.Scale());
+
+      // 定位
+      geolocation = new AMap.Geolocation({
+        enableHighAccuracy: true,
+        timeout: 10000,
+        buttonOffset: new AMap.Pixel(10, 20),
+        zoomToAccuracy: true
+      });
+      map.addControl(geolocation);
+
+      // 逆地理编码
+      geocoder = new AMap.Geocoder();
+
+      // 周边搜索
+      placeSearch = new AMap.PlaceSearch({
+        type: '餐饮服务',
+        pageSize: 25,
+        pageIndex: 1,
+        extensions: 'all'
+      });
+
+      // 信息窗体
+      infoWindow = new AMap.InfoWindow({
+        offset: new AMap.Pixel(0, -30),
+        autoMove: true
+      });
+
+      // 尝试定位
+      geolocation.getCurrentPosition(function (status, result) {
+        if (status === 'complete') {
+          map.setCenter(result.position);
+          searchNearby(result.position);
+        } else {
+          // 定位失败，用深圳默认位置搜索
+          searchNearby([114.057868, 22.543099]);
+        }
+      });
+    }
+
+    // ==================== 搜索附近美食 ====================
+    function searchNearby(center) {
+      placeSearch.searchNearBy('', center, 2000, function (status, result) {
+        if (status === 'complete' && result.poiList && result.poiList.pois) {
+          // 清除旧的 POI 标记
+          poiMarkers.forEach(m => map.remove(m));
+          poiMarkers = [];
+
+          result.poiList.pois.forEach(function (poi) {
+            const marker = new AMap.Marker({
+              position: poi.location,
+              title: poi.name,
+              icon: new AMap.Icon({
+                image: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_b.png',
+                size: new AMap.Size(19, 31),
+                imageSize: new AMap.Size(19, 31)
+              }),
+              offset: new AMap.Pixel(-9, -31)
+            });
+            marker.on('click', function () {
+              showPoiInfo(poi);
+            });
+            map.add(marker);
+            poiMarkers.push(marker);
+          });
+        }
+      });
+    }
+
+    // 显示 POI 信息窗体
+    function showPoiInfo(poi) {
+      const biz = poi.biz_ext || {};
+      const rating = biz.rating ? `⭐ ${biz.rating}` : '暂无评分';
+      const openTime = biz.open_time ? `🕒 ${biz.open_time}` : '营业时间未知';
+      const cost = biz.cost ? `💰 人均 ${biz.cost} 元` : '';
+
+      const content = `
+        <div style="padding:10px; min-width:220px; font-size:13px; line-height:1.6;">
+          <h4 style="margin:0 0 6px; font-size:15px;">${poi.name}</h4>
+          <div>📍 ${poi.address || '地址未知'}</div>
+          <div>📞 ${poi.tel || '电话未知'}</div>
+          <div>${rating} ${cost}</div>
+          <div>${openTime}</div>
+          <div style="margin-top:8px;">
+            <button onclick="addFromPoi('${poi.id}')" style="padding:6px 12px; background:#1aad19; color:#fff; border:none; border-radius:4px; cursor:pointer;">收藏到我的记录</button>
+          </div>
+        </div>
+      `;
+      infoWindow.setContent(content);
+      infoWindow.open(map, poi.location);
+      window.currentPoi = poi; // 缓存当前 POI
+    }
+
+    // 从 POI 快速添加记录
+    window.addFromPoi = function (poiId) {
+      const poi = window.currentPoi;
+      if (!poi) return;
+      infoWindow.close();
+
+      // 打开添加表单，并预填信息
+      tempLngLat = poi.location;
+      tempAddress = poi.address || '';
+      document.getElementById('inputName').value = poi.name;
+      document.getElementById('inputAddress').value = tempAddress;
+      document.getElementById('inputRemark').value = '';
+      tempImages = [];
+      renderImagePreview();
+      document.getElementById('modal').classList.remove('hidden');
+    };
+
+    // ==================== 用户添加记录 ====================
+    function bindEvents() {
+      // 添加记录按钮
+      document.getElementById('addBtn').addEventListener('click', function () {
+        addingMode = true;
+        alert('请在地图上点击你要记录的位置');
+      });
+
+      // 地图点击事件
+      map.on('click', function (e) {
+        if (addingMode) {
+          addingMode = false;
+          tempLngLat = e.lnglat;
+          // 逆地理编码获取地址
+          geocoder.getAddress(tempLngLat, function (status, result) {
+            if (status === 'complete' && result.regeocode) {
+              tempAddress = result.regeocode.formattedAddress;
+            } else {
+              tempAddress = '';
+            }
+            document.getElementById('inputName').value = '';
+            document.getElementById('inputAddress').value = tempAddress;
+            document.getElementById('inputRemark').value = '';
+            tempImages = [];
+            renderImagePreview();
+            document.getElementById('modal').classList.remove('hidden');
+          });
+        }
+      });
+
+      // 搜索按钮
+      document.getElementById('searchBtn').addEventListener('click', function () {
+        geolocation.getCurrentPosition(function (status, result) {
+          if (status === 'complete') {
+            map.setCenter(result.position);
+            searchNearby(result.position);
+          } else {
+            searchNearby(map.getCenter());
+          }
+        });
+      });
+
+      // 图片选择
+      document.getElementById('inputImages').addEventListener('change', async function (e) {
+        const files = Array.from(e.target.files);
+        for (const file of files) {
+          const base64 = await compressImage(file);
+          tempImages.push(base64);
+        }
+        renderImagePreview();
+        e.target.value = ''; // 允许重复选择同一文件
+      });
+
+      // 取消
+      document.getElementById('cancelBtn').addEventListener('click', function () {
+        document.getElementById('modal').classList.add('hidden');
+      });
+
+      // 保存
+      document.getElementById('saveBtn').addEventListener('click', function () {
+        const name = document.getElementById('inputName').value.trim();
+        const remark = document.getElementById('inputRemark').value.trim();
+        if (!name) {
+          alert('请填写店名');
+          return;
+        }
+        if (!tempLngLat) {
+          alert('坐标丢失，请重新选点');
+          return;
+        }
+
+        const record = {
+          id: 'user_' + Date.now(),
+          name: name,
+          remark: remark,
+          address: tempAddress,
+          lng: tempLngLat.lng,
+          lat: tempLngLat.lat,
+          images: tempImages.slice(),
+          createdAt: Date.now()
+        };
+
+        records.push(record);
+        saveRecords();
+        addUserMarker(record);
+        renderRecordsList();
+        document.getElementById('modal').classList.add('hidden');
+        map.setCenter([record.lng, record.lat]);
+      });
+    }
+
+    // 图片压缩
+    function compressImage(file, maxWidth = 800, quality = 0.7) {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = function (e) {
+          const img = new Image();
+          img.onload = function () {
+            const canvas = document.createElement('canvas');
+            let width = img.width;
+            let height = img.height;
+            if (width > maxWidth) {
+              height = height * maxWidth / width;
+              width = maxWidth;
+            }
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0, width, height);
+            resolve(canvas.toDataURL('image/jpeg', quality));
+          };
+          img.src = e.target.result;
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+
+    function renderImagePreview() {
+      const preview = document.getElementById('imagePreview');
+      preview.innerHTML = tempImages.map(src => `<img src="${src}">`).join('');
+    }
+
+    // ==================== 用户记录标记 ====================
+    function addUserMarker(record) {
+      const marker = new AMap.Marker({
+        position: [record.lng, record.lat],
+        title: record.name,
+        icon: new AMap.Icon({
+          image: 'https://webapi.amap.com/theme/v1.3/markers/n/mark_r.png',
+          size: new AMap.Size(19, 31),
+          imageSize: new AMap.Size(19, 31)
+        }),
+        offset: new AMap.Pixel(-9, -31)
+      });
+      marker.on('click', function () {
+        showUserInfo(record);
+      });
+      marker.recordId = record.id;
+      map.add(marker);
+      userMarkers.push(marker);
+    }
+
+    function showUserInfo(record) {
+      const imagesHtml = record.images && record.images.length
+        ? record.images.map(src => `<img src="${src}" style="max-width:100%; border-radius:4px; margin-top:4px;">`).join('')
+        : '';
+      const content = `
+        <div style="padding:10px; min-width:220px; max-width:300px; font-size:13px; line-height:1.6;">
+          <h4 style="margin:0 0 6px; font-size:15px;">${record.name}</h4>
+          <div>📍 ${record.address || '地址未知'}</div>
+          <div style="margin-top:6px; color:#555;">${record.remark || '暂无备注'}</div>
+          ${imagesHtml}
+          <div style="margin-top:8px;">
+            <button onclick="deleteRecord('${record.id}')" style="padding:6px 12px; background:#ff3b30; color:#fff; border:none; border-radius:4px; cursor:pointer;">删除</button>
+          </div>
+        </div>
+      `;
+      infoWindow.setContent(content);
+      infoWindow.open(map, [record.lng, record.lat]);
+    }
+
+    window.deleteRecord = function (id) {
+      if (!confirm('确定删除这条记录吗？')) return;
+      records = records.filter(r => r.id !== id);
+      saveRecords();
+      // 移除标记
+      userMarkers = userMarkers.filter(m => {
+        if (m.recordId === id) {
+          map.remove(m);
+          return false;
+        }
+        return true;
+      });
+      renderRecordsList();
+      infoWindow.close();
+    };
+
+    // ==================== 存储与列表 ====================
+    function saveRecords() {
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(records));
+      } catch (e) {
+        alert('存储空间不足，请删除一些旧记录或减少图片数量。');
+      }
+    }
+
+    function loadRecords() {
+      const stored = localStorage.getItem(STORAGE_KEY);
+      if (stored) {
+        try {
+          records = JSON.parse(stored);
+          records.forEach(record => addUserMarker(record));
+          renderRecordsList();
+        } catch (e) {
+          console.error('加载记录失败', e);
+        }
+      }
+    }
+
+    function renderRecordsList() {
+      const list = document.getElementById('recordsList');
+      if (records.length === 0) {
+        list.innerHTML = '<div style="color:#999; font-size:13px; margin-top:10px;">还没有记录，点击上方按钮添加吧～</div>';
+        return;
+      }
+      list.innerHTML = records.map(r => `
+        <div class="record-item" onclick="locateRecord('${r.id}')">
+          <div class="name">${r.name}</div>
+          <div class="remark">${r.remark || r.address || '无备注'}</div>
+        </div>
+      `).join('');
+    }
+
+    window.locateRecord = function (id) {
+      const record = records.find(r => r.id === id);
+      if (record) {
+        map.setCenter([record.lng, record.lat]);
+        map.setZoom(17);
+        showUserInfo(record);
+      }
+    };
+  </script>
+</body>
+</html>
